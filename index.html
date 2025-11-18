@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NanchtteGachaRollSimulator</title>
+    <link rel="icon" href="data:,">
     <style>
         body { font-family: Arial, sans-serif; padding: 10px; font-size: 12px; }
         h1 { font-size: 1em; font-weight: bold; text-align: center; margin-bottom: 10px;}
@@ -57,7 +58,9 @@
                 margin: 0 auto 10px auto;
                 box-sizing: border-box;
             }
-            #rolls-table-container {
+            /* ★ 修正: 両方のテーブルコンテナに適用 */
+            #rolls-table-container,
+            #serial-table-container {
                 overflow-x: auto;
                 -webkit-overflow-scrolling: touch;
             }
@@ -110,6 +113,8 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
     </div>
 
     <div id="rolls-table-container"></div>
+    <div id="serial-table-container"></div>
+    
     <div id="table-actions">
         <button onclick="addMoreRows(100)">100行追加する</button>
         <button id="toggle-seed-btn" onclick="toggleSeedColumns()">SEEDを表示</button>
@@ -125,6 +130,10 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
         let showSeedColumns = false;
         let showResultDisplay = false;
         let finalSeedForUpdate = null; // SEED更新ボタン用
+
+        // ★ 動的表示用のグローバル変数
+        let gachaDetailsForAllGachas = {};
+        let gachaConfigsForRevert = [];
 
         function toggleDescription() {
             const content = document.getElementById('description-content');
@@ -575,18 +584,20 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
         // --- ★ 5. (新規) 回避/誘発ロジック用ヘルパー関数 ---
 
         /**
-         * i行目のトラックの「代表」リンクを取得する (i-1 や i-2 からの参照用)
+         * ★ 修正: i行目のトラック -> seedIndex
          * @param {Map} cellSimConfigs - デフォルトリンクのMap
-         * @param {string} track - 'A' or 'B'
-         * @param {number} i - 行インデックス
+         * @param {number} seedIndex - 0-based seed index
          * @param {Array} gachaConfigs - ガチャ設定配列
          * @returns {string|null} - 見つかった最初のsim-config文字列、またはnull
          */
-        function getBestLink(cellSimConfigs, track, i, gachaConfigs) {
-            if (i < 0) return null;
+        // ★★★ 修正箇所 1 ★★★
+        function getBestLink(cellSimConfigs, seedIndex, gachaConfigs) {
+            if (seedIndex < 0) return null;
+            // ★ 修正: どのガチャのリンクでも良いので最初に見つかったものを返す
             for (const config of gachaConfigs) {
-                const configStr = cellSimConfigs.get(`${track}-${i}-${config.id}`);
-                if (configStr) {
+                const configStr = cellSimConfigs.get(`${seedIndex}-${config.id}`);
+                // ★ 修正: undefined (キーが存在しない) 以外なら返す (null や '' も有効な値として扱う)
+                if (configStr !== undefined) {
                     return configStr;
                 }
             }
@@ -595,7 +606,7 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
 
         /**
          * 誘発ロジック用に、強制的に3シード消費した場合のキャラ名を取得する
-         * @param {object} currentRoll - tableData[i][track][gachaIndex].roll の中身
+         * @param {object} currentRoll - tableData[seedIndex][gachaIndex].roll の中身
          * @param {object} gachaConfig - ガチャ設定
          * @returns {string|null} - 再抽選後のキャラ名、またはnull
          */
@@ -617,9 +628,8 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
 
 
         /**
-         * (メインロジック) レア被り回避と誘発の代替リンクを計算する
-         * @param {string} track - 'A' or 'B'
-         * @param {number} i - 行インデックス
+         * ★ 修正: (メインロジック) レア被り回避と誘発の代替リンクを計算する
+         * @param {number} seedIndex - 0-based seed index
          * @param {string} currentGachaId - 現在のガチャID
          * @param {Array} tableData - 全テーブルデータ
          * @param {Array} gachaConfigs - ガチャ設定配列
@@ -627,84 +637,81 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
          * @param {number} newRow1Index - CONTINUEエリアの開始行
          * @returns {object} - { link: string|null, rerollCharName: string|null }
          */
-        function checkAvoidanceAndForcing(track, i, currentGachaId, tableData, gachaConfigs, cellSimConfigs, newRow1Index) {
-            // FIXEDエリア (ハイライト) では実行しない
+        function checkAvoidanceAndForcing(seedIndex, currentGachaId, tableData, gachaConfigs, cellSimConfigs, newRow1Index) {
+            const i = Math.floor(seedIndex / 2); // 行インデックス
             if (i < newRow1Index) {
                 return { link: null, rerollCharName: null };
             }
 
             const gachaIndex = gachaConfigs.findIndex(c => c.id === currentGachaId);
-            if (gachaIndex === -1 || !tableData[i] || !tableData[i][track][gachaIndex]) {
+            if (gachaIndex === -1 || !tableData[seedIndex] || !tableData[seedIndex][gachaIndex]) {
                 return { link: null, rerollCharName: null };
             }
 
-            const currentRoll = tableData[i][track][gachaIndex].roll;
-            const isRerolled = currentRoll.isRerolled; // ガチャX単体での判定
-            const originalCharId = currentRoll.originalChar?.id; // originalCharがnullの場合がある
+            const currentRoll = tableData[seedIndex][gachaIndex].roll;
+            const isRerolled = currentRoll.isRerolled;
+            const originalCharId = currentRoll.originalChar?.id;
             const originalRarity = currentRoll.rarity;
 
-            // レア以外は対象外
             if (originalRarity !== 'rare' || !originalCharId) {
                 return { link: null, rerollCharName: null };
             }
 
+            // ★ 修正: seedIndex - 2 (同一トラック) と seedIndex - 3 (別トラックからの被り遷移) の両方をチェック
+            const prevIndicesToCheck = [seedIndex - 2, seedIndex - 3];
+
             for (const otherConfig of gachaConfigs) {
                 const otherGachaId = otherConfig.id;
-                if (otherGachaId === currentGachaId) continue; // 自分自身とは比較しない
+                if (otherGachaId === currentGachaId) continue; // 別のガチャのみチェック
 
                 const otherIndex = gachaConfigs.findIndex(c => c.id === otherGachaId);
-                const otherRoll_i = tableData[i][track][otherIndex].roll;
-                const otherRoll_prev = (i > 0) ? tableData[i-1][track][otherIndex].roll : null;
+                if (otherIndex === -1) continue;
 
-                if (isRerolled) {
-                    // --- 1. レア被り回避 (Avoid Dupe) ---
-                    // (デフォルトが3-seedなので、2-seedになる代替リンク (avoidConfig) を探す)
-
-                    // A. 直前の行(i-1)に違うキャラ(Y)がいる
-                    if (otherRoll_prev && otherRoll_prev.rarity === 'rare' && otherRoll_prev.charId !== originalCharId) {
-                        // [config_i-2] + [Y-1] + [X-1]
-                        // 注: 3シード消費 (A->B または B->A) をまたいだ i-2 の参照は複雑すぎるため、
-                        // i-1 が2シード消費だった場合の i-2 (同一トラック) のみ考慮する。
-                        const prevRoll = (i > 0) ? tableData[i-1][track][gachaIndex].roll : null;
-                        if (prevRoll && prevRoll.seedsConsumed <= 2) {
-                             const prevPrevConfig = getBestLink(cellSimConfigs, track, i - 2, gachaConfigs);
-                             if (prevPrevConfig !== null) {
-                                return { link: stringifySimConfig([...parseSimConfig(prevPrevConfig), {id: otherGachaId, rolls: 1, g: false}, {id: currentGachaId, rolls: 1, g: false}]), rerollCharName: null };
-                             }
-                        }
-                    }
-                    // B. 当該行(i)に違うキャラ(Y)がいる
-                    if (otherRoll_i && otherRoll_i.rarity === 'rare' && otherRoll_i.charId !== originalCharId) {
-                        // [config_i-1] + [Y-1]
-                        const prevConfig = getBestLink(cellSimConfigs, track, i - 1, gachaConfigs);
-                         if (prevConfig !== null) {
-                            return { link: stringifySimConfig([...parseSimConfig(prevConfig), {id: otherGachaId, rolls: 1, g: false}]), rerollCharName: null };
-                         }
-                    }
-                } else {
-                    // --- 2. レア被り誘発 (Force Dupe) ---
-                    // (デフォルトが2-seedなので、3-seedになる代替リンク (forceConfig) を探す)
+                // ★★★ 修正箇所 2 ★★★
+                const createAltConfig = (prevIndexUsed) => {
+                    // リンクの基点を、実際にロールを置き換える前の prevIndexUsed にする
+                    const configStr = getBestLink(cellSimConfigs, prevIndexUsed, gachaConfigs); 
                     
-                    // A. 直前の行(i-1)に同じキャラ(Y)がいる
-                    if (otherRoll_prev && otherRoll_prev.rarity === 'rare' && otherRoll_prev.charId === originalCharId) {
-                        // [config_i-2] + [Y-1] + [X-1]
-                        const prevRoll = (i > 0) ? tableData[i-1][track][gachaIndex].roll : null;
-                        if (prevRoll && prevRoll.seedsConsumed <= 2) {
-                            const prevPrevConfig = getBestLink(cellSimConfigs, track, i - 2, gachaConfigs);
-                            if (prevPrevConfig !== null) {
-                                const rerollCharName = getForcedRerollName(currentRoll, gachaConfigs[gachaIndex]);
-                                return { link: stringifySimConfig([...parseSimConfig(prevPrevConfig), {id: otherGachaId, rolls: 1, g: false}, {id: currentGachaId, rolls: 1, g: false}]), rerollCharName: rerollCharName };
+                    // ★ 修正: configStr が null (リンク無効 or キー未設定) の場合は null を返す
+                    if (configStr === null) return null; 
+                    
+                    // configStr が '' (起点) または有効な文字列の場合
+                    const parts = parseSimConfig(configStr); // '' の場合は []
+                    
+                    // 最後のセグメントが置き換え対象のガチャIDと同じならロール数を+1、違うなら新しいセグメントを追加
+                    const last_part = parts.length > 0 ? parts[parts.length - 1] : null;
+                    if (last_part && last_part.id === otherGachaId && !last_part.g) {
+                        last_part.rolls += 1;
+                    } else {
+                        parts.push({ id: otherGachaId, rolls: 1, g: false });
+                    }
+                    return stringifySimConfig(parts);
+                };
+
+                for (const prevIndex of prevIndicesToCheck) {
+                    if (prevIndex < 0) continue;
+
+                    const otherRoll_prev = tableData[prevIndex]?.[otherIndex]?.roll;
+                    if (!otherRoll_prev) continue;
+
+                    if (isRerolled) {
+                        // --- 1. レア被り回避 (Avoid Dupe) ---
+                        // 別のガチャ(otherRoll_prev)が、被りの原因(originalCharId)と異なるキャラだった場合
+                        if (otherRoll_prev.rarity !== 'rare' || otherRoll_prev.charId !== originalCharId) { 
+                            const altConfig = createAltConfig(prevIndex);
+                            if (altConfig) {
+                                return { link: altConfig, rerollCharName: null };
                             }
                         }
-                    }
-                    // B. 当該行(i)に直前(X, i-1)と同じキャラ(Y)がいる
-                    const prevRoll = (i > 0) ? tableData[i-1][track][gachaIndex].roll : null;
-                    if (prevRoll && prevRoll.rarity === 'rare' && otherRoll_i && otherRoll_i.rarity === 'rare' && otherRoll_i.charId === prevRoll.charId) {
-                         // [config_i-1] + [Y-1]
-                        const prevConfig = getBestLink(cellSimConfigs, track, i - 1, gachaConfigs);
-                        if (prevConfig !== null) {
-                            const rerollCharName = getForcedRerollName(currentRoll, gachaConfigs[gachaIndex]);
-                            return { link: stringifySimConfig([...parseSimConfig(prevConfig), {id: otherGachaId, rolls: 1, g: false}]), rerollCharName: rerollCharName };
+                    } else {
+                        // --- 2. レア被り誘発 (Force Dupe) ---
+                        // 別のガチャ(otherRoll_prev)が、被りの原因(originalCharId)と同じキャラだった場合
+                        if (otherRoll_prev.rarity === 'rare' && otherRoll_prev.charId === originalCharId) {
+                            const altConfig = createAltConfig(prevIndex);
+                            if (altConfig) {
+                                const rerollCharName = getForcedRerollName(currentRoll, gachaConfigs[gachaIndex]);
+                                return { link: altConfig, rerollCharName: rerollCharName };
+                            }
                         }
                     }
                 }
@@ -713,102 +720,122 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
             return { link: null, rerollCharName: null };
         }
 
-        function canBeForced(track, i, currentGachaId, tableData, gachaConfigs) {
+        /** ★ 修正: track, i -> seedIndex */
+        function canBeForced(seedIndex, currentGachaId, tableData, gachaConfigs) {
             const gachaIndex = gachaConfigs.findIndex(c => c.id === currentGachaId);
-            if (gachaIndex === -1 || i === 0 || !tableData[i] || !tableData[i][track][gachaIndex]) return false;
+            if (gachaIndex === -1 || seedIndex < 1 || !tableData[seedIndex] || !tableData[seedIndex][gachaIndex]) return false;
 
-            const currentRoll = tableData[i][track][gachaIndex].roll;
-            // Must be a non-rerolled rare to be forceable.
-            if (currentRoll.rarity !== 'rare' || currentRoll.isRerolled || !currentRoll.originalChar) return false;
+            const currentRoll = tableData[seedIndex][gachaIndex].roll;
+            // ★ 修正: 2つ前と3つ前のシードをチェック
+            const prevIndicesToCheck = [seedIndex - 2, seedIndex - 3];
 
-            const originalCharId = currentRoll.originalChar.id;
+            for (const prevIndex of prevIndicesToCheck) {
+                if (prevIndex < 0) continue;
+                for (const otherConfig of gachaConfigs) {
+                    const otherIndex = gachaConfigs.findIndex(c => c.id === otherConfig.id);
+                    if (otherIndex === -1) continue;
 
-            // To force the reroll, we need to find a path that ends at i-1 with a character
-            // that IS originalCharId. We only consider paths on the same track.
-            for (const otherConfig of gachaConfigs) {
-                const otherIndex = gachaConfigs.findIndex(c => c.id === otherConfig.id);
-                if (otherIndex === -1) continue;
+                    const otherRoll_prev = tableData[prevIndex]?.[otherIndex]?.roll;
 
-                const otherRoll_prev = tableData[i-1]?.[track]?.[otherIndex]?.roll;
-
-                // If there is any character in the previous row (from any gacha) that is the one that would cause a dupe,
-                // it's possible to route through it and force the dupe.
-                if (otherRoll_prev && otherRoll_prev.rarity === 'rare' && otherRoll_prev.charId === originalCharId) {
-                    return true;
+                    if (otherRoll_prev && otherRoll_prev.rarity === 'rare' && otherRoll_prev.charId === originalCharId) {
+                        return true;
+                    }
                 }
             }
-
             return false;
         }
 
-        function canBeAvoided(track, i, currentGachaId, tableData, gachaConfigs) {
+        /** ★ 修正: track, i -> seedIndex */
+        function canBeAvoided(seedIndex, currentGachaId, tableData, gachaConfigs) {
             const gachaIndex = gachaConfigs.findIndex(c => c.id === currentGachaId);
-            if (gachaIndex === -1 || i === 0 || !tableData[i] || !tableData[i][track][gachaIndex]) return false;
+            if (gachaIndex === -1 || seedIndex < 1 || !tableData[seedIndex] || !tableData[seedIndex][gachaIndex]) return false;
 
-            const currentRoll = tableData[i][track][gachaIndex].roll;
-            // Must be a rerolled rare to be avoidable.
+            const currentRoll = tableData[seedIndex][gachaIndex].roll;
             if (currentRoll.rarity !== 'rare' || !currentRoll.isRerolled || !currentRoll.originalChar) return false;
             
             const originalCharId = currentRoll.originalChar.id;
 
-            // To avoid the reroll, we need to find a path that ends at i-1 with a character
-            // that is NOT originalCharId. We only consider paths on the same track.
-            for (const otherConfig of gachaConfigs) {
-                const otherIndex = gachaConfigs.findIndex(c => c.id === otherConfig.id);
-                if (otherIndex === -1) continue;
+            // ★ 修正: 2つ前と3つ前のシードをチェック
+            const prevIndicesToCheck = [seedIndex - 2, seedIndex - 3];
 
-                const otherRoll_prev = tableData[i-1]?.[track]?.[otherIndex]?.roll;
+            for (const prevIndex of prevIndicesToCheck) {
+                if (prevIndex < 0) continue;
+                for (const otherConfig of gachaConfigs) {
+                    const otherIndex = gachaConfigs.findIndex(c => c.id === otherConfig.id);
+                    if (otherIndex === -1) continue;
 
-                // If there is any character in the previous row (from any gacha) that is not the one causing the dupe,
-                // it's possible to route through it and avoid the dupe.
-                if (otherRoll_prev && otherRoll_prev.rarity === 'rare' && otherRoll_prev.charId !== originalCharId) {
-                    return true;
+                    const otherRoll_prev = tableData[prevIndex]?.[otherIndex]?.roll;
+
+                    if (otherRoll_prev && (otherRoll_prev.rarity !== 'rare' || otherRoll_prev.charId !== originalCharId)) {
+                        return true;
+                    }
                 }
             }
-
             return false;
         }
 
         // --- ヘルパー関数 終了 ---
 
-        // --- Helper functions for new calculation columns ---
-        function getRarityDetail(track, rowIndex, rollResult, seeds) {
+        // --- ★ 修正: Helper functions for new calculation columns ---
+        /**
+         * @param {number} serialNumber - 1-based seed index (S1)
+         * @param {object} rollResult - The roll result object
+         * @param {number[]} seeds - The seeds array (not used here, but kept for consistency)
+         */
+        function getRarityDetail(serialNumber, rollResult, seeds) {
             if (!rollResult) return '';
-            const startIndex = rowIndex * 2 + (track === 'B' ? 1 : 0);
+            // serialNumber is 1-based (S1).
             const { s0, rarity } = rollResult;
             if (s0 === null || rarity === null) return '';
-            return `(S${startIndex + 1})${s0}<br>${s0 % 10000}<br>${rarity}`;
+            return `(S${serialNumber})${s0}<br>${s0 % 10000}<br>${rarity}`;
         }
 
-        function getSlotDetail(track, rowIndex, rollResult, seeds) {
+        /**
+         * @param {number} serialNumber - 1-based seed index (S1)
+         * @param {object} rollResult - The roll result object
+         * @param {number[]} seeds - The seeds array (not used here)
+         */
+        function getSlotDetail(serialNumber, rollResult, seeds) {
             if (!rollResult) return '';
-            const startIndex = rowIndex * 2 + (track === 'B' ? 1 : 0);
+            // serialNumber is 1-based (S1). S2 is serialNumber + 1.
             const { s1, totalChars, charIndex } = rollResult;
             if (s1 === null || totalChars === 0) return '';
-            return `(S${startIndex + 2})${s1}<br>${totalChars}<br>${charIndex}`;
+            return `(S${serialNumber + 1})${s1}<br>${totalChars}<br>${charIndex}`;
         }
 
-        function getRerollDetail(track, rowIndex, rollResult, gachaConfig, seeds) {
+        /**
+         * @param {number} serialNumber - 1-based seed index (S1)
+         * @param {object} rollResult - The roll result object
+         * @param {object} gachaConfig - The gacha config (not used here)
+         * @param {number[]} seeds - The seeds array (not used here)
+         */
+        function getRerollDetail(serialNumber, rollResult, gachaConfig, seeds) {
             if (rollResult && rollResult.isRerolled) {
-                const startIndex = rowIndex * 2 + (track === 'B' ? 1 : 0);
+                // serialNumber is 1-based (S1). S3 is serialNumber + 2.
                 const { s2, uniqueTotal, reRollIndex } = rollResult;
                 if (s2 === null) return '---';
-                return `(S${startIndex + 3})${s2}<br>${uniqueTotal}<br>${reRollIndex}`;
+                return `(S${serialNumber + 2})${s2}<br>${uniqueTotal}<br>${reRollIndex}`;
             } else {
                 return '---';
             }
         }
 
-        function getGuaranteedDetail(track, rowIndex, gachaConfig, seeds, lastDraw) {
+        /**
+         * @param {number} serialNumber - 1-based seed index (S1)
+         * @param {object} gachaConfig - The gacha config
+         * @param {number[]} seeds - The seeds array
+         * @param {object} lastDraw - The last draw info
+         */
+        function getGuaranteedDetail(serialNumber, gachaConfig, seeds, lastDraw) {
             if (!gachaConfig) return '---';
-            const startIndex = rowIndex * 2 + (track === 'B' ? 1 : 0);
+            const startIndex = serialNumber - 1; // 0-based seed index for S1
             const lookahead = calculateGuaranteedLookahead(startIndex, gachaConfig, seeds, lastDraw);
 
             if (!lookahead || lookahead.name === "データ不足" || lookahead.name === "N/A" || lookahead.nextRollStartSeedIndex === null) {
                 return '---';
             }
             
-            const guaranteedSeedIndex = lookahead.nextRollStartSeedIndex - 1;
+            const guaranteedSeedIndex = lookahead.nextRollStartSeedIndex - 1; // 0-based index of the guaranteed seed
             if (guaranteedSeedIndex < 0 || guaranteedSeedIndex >= seeds.length) return '---';
 
             const guaranteedSeed = seeds[guaranteedSeedIndex];
@@ -818,17 +845,65 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
 
             const slotIndex = guaranteedSeed % totalUbers;
 
+            // guaranteedSeedIndex は 0-based なので、S(N) 形式で表示するために +1 (serial number) する
             return `(S${guaranteedSeedIndex + 1})${guaranteedSeed}<br>${totalUbers}<br>${slotIndex}`;
         }
         // --- End of helper functions ---
 
 
 
+        function getAddress(seedIndex, numRolls) {
+            if (seedIndex === null || seedIndex >= numRolls * 2) return '';
+            const serialNumber = seedIndex + 1;
+            const row = Math.floor(seedIndex / 2) + 1;
+            const track = (seedIndex % 2 === 0) ? 'A' : 'B';
+            const adrs = `${row}${track}`;
+            return `No.${serialNumber}(${adrs})`;
+        }
+
+        function getDupeInfoHtml(dupeInfo, seedIndex, numRolls) {
+            if (!dupeInfo) return '---';
+
+            const { isDupe, isConsecutive, isForceable, isAvoidable } = dupeInfo;
+
+            // Line 1: （被り）... / （連続）...
+            const dupeDest = isDupe ? `→${getAddress(seedIndex + 3, numRolls)}` : '';
+            const dupeText = `（被り）${isDupe ? 'True' : 'False'}${dupeDest}`;
+            const consecutiveText = `（連続）${isDupe ? (isConsecutive ? 'True' : 'False') : '---'}`;
+            const line1 = `${dupeText}/${consecutiveText}`;
+
+            // Line 2: （誘発）... / （回避）...
+            let forceableText = '（誘発）---';
+            if (!isDupe) {
+                if (isForceable) {
+                    const forceableDest = `→${getAddress(seedIndex + 3, numRolls)}`;
+                    forceableText = `（誘発）True${forceableDest}`;
+                } else {
+                    forceableText = '（誘発）False';
+                }
+            }
+
+            let avoidableText = '（回避）---';
+            if (isDupe) {
+                if (isAvoidable) {
+                    const avoidableDest = `→${getAddress(seedIndex + 2, numRolls)}`;
+                    avoidableText = `（回避）True${avoidableDest}`;
+                } else {
+                    avoidableText = '（回避）False';
+                }
+            }
+            
+            const line2 = `${forceableText}/${avoidableText}`;
+
+            return `${line1}<br>${line2}`;
+        }
+
+
         function generateRollsTable() {
             try {
                 if (Object.keys(gachaMasterData).length === 0) { return; }
                 const initialSeed = parseInt(document.getElementById('seed').value, 10);
-                const numRolls = currentRolls;
+                const numRolls = currentRolls; // numRolls は行数 (A/Bペアの数)
                 if (isNaN(initialSeed) || isNaN(numRolls)) {
                     document.getElementById('rolls-table-container').innerHTML = '<p class="error">エラー: 有効な値を入力してください。</p>';
                     return;
@@ -836,6 +911,7 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
                 
                 const seeds = [];
                 const rngForSeeds = new Xorshift32(initialSeed);
+                // ★ 修正: numRolls * 2 (シード数) を基準に十分なシードを生成
                 for (let i = 0; i < numRolls * 15 + 20; i++) { seeds.push(rngForSeeds.next()); } // Increased seed generation
 
                 const simConfigInput = document.getElementById('sim-config').value.trim();
@@ -861,16 +937,19 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
                     });
                 }
                 
+                // ★ 修正: gachaConfigs は G列を含まないユニークIDのリスト
                 const uniqueGachaIds = [...new Set(tableGachaIds.map(id => id.replace('g', '')))];
                 const gachaConfigs = uniqueGachaIds.map(id => gachaMasterData.gachas[id]).filter(Boolean);
+                gachaConfigsForRevert = gachaConfigs; // ★ グローバル変数にセット
 
+                // ★ 修正: highlightMap, pathDetails を seedIndex (0-based) 基準に変更
                 const highlightMap = new Map();
                 const simulationResults = [];
                 
                 let rngForText = new Xorshift32(initialSeed);
-                let currentSeedIndex = 0;
+                let currentSeedIndex = 0; // 0-based seed index
                 let lastDrawForHighlight = { rarity: null, charId: null };
-                let pathDetails = [];
+                let pathDetails = []; // { seedIndex: number, id: string }
                 let totalSimRolls = 0;
 
                 if (simConfigs.length > 0) {
@@ -879,131 +958,143 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
                         const isGuaranteedPath = sim.g && sim.rolls === 11;
                         
                         if (isGuaranteedPath) {
-                            const startTrack = (currentSeedIndex % 2 === 0) ? 'A' : 'B'; 
-                            const startRow = Math.floor(currentSeedIndex / 2);
+                            const startSeedIndex = currentSeedIndex;
                             for (let i = 0; i < 10; i++) {
-                                const row = Math.floor(currentSeedIndex / 2);
-                                const track = (currentSeedIndex % 2 === 0) ? 'A' : 'B';
-                                if (row >= numRolls) break;
-                                highlightMap.set(`${row}-${track}`, sim.id);
+                                // ★ 修正: currentSeedIndex が numRolls*2 を超えないように
+                                if (currentSeedIndex >= numRolls * 2) break; 
+                                highlightMap.set(currentSeedIndex, sim.id);
                                 const rollResult = rollWithSeedConsumptionFixed(currentSeedIndex, sim.gachaConfig, seeds, lastDrawForHighlight);
                                 if (rollResult.seedsConsumed === 0) break;
-                                pathDetails.push({ row, track, id: sim.id });
+                                pathDetails.push({ seedIndex: currentSeedIndex, id: sim.id });
                                 lastDrawForHighlight = { rarity: rollResult.rarity, charId: rollResult.charId };
                                 currentSeedIndex += rollResult.seedsConsumed;
                                 for(let k = 0; k < rollResult.seedsConsumed; k++) rngForText.next(); 
-                                simulationResults.push({ ...sim, result: rollResult, track: track, isGuaranteed: false, rollNum: ++totalSimRolls });
+                                simulationResults.push({ ...sim, result: rollResult, track: (pathDetails[pathDetails.length-1].seedIndex % 2 === 0 ? 'A' : 'B'), isGuaranteed: false, rollNum: ++totalSimRolls });
                             }
-                            if (startRow < numRolls) {
-                                highlightMap.set(`${startRow}-${startTrack}G`, sim.id); 
+                            // ★ 修正: Gハイライトキー
+                            if (startSeedIndex < numRolls * 2) {
+                                highlightMap.set(`${startSeedIndex}G`, sim.id); 
                             }
                             if (currentSeedIndex >= seeds.length) continue;
                             const guaranteedResult = rollGuaranteedUber(currentSeedIndex, sim.gachaConfig, seeds);
                             currentSeedIndex += guaranteedResult.seedsConsumed;
                             for(let k = 0; k < guaranteedResult.seedsConsumed; k++) rngForText.next(); 
-                            simulationResults.push({ ...sim, result: guaranteedResult, track: startTrack, isGuaranteed: true, rollNum: ++totalSimRolls });
+                            simulationResults.push({ ...sim, result: guaranteedResult, track: (startSeedIndex % 2 === 0 ? 'A' : 'B'), isGuaranteed: true, rollNum: ++totalSimRolls });
                         } else {
                             for (let i = 0; i < sim.rolls; i++) {
-                                const row = Math.floor(currentSeedIndex / 2);
-                                const track = (currentSeedIndex % 2 === 0) ? 'A' : 'B';
-                                if (row >= numRolls) break;
-                                highlightMap.set(`${row}-${track}`, sim.id);
+                                if (currentSeedIndex >= numRolls * 2) break;
+                                highlightMap.set(currentSeedIndex, sim.id);
                                 const rollResult = rollWithSeedConsumptionFixed(currentSeedIndex, sim.gachaConfig, seeds, lastDrawForHighlight);
                                 if (rollResult.seedsConsumed === 0) break;
-                                pathDetails.push({ row, track, id: sim.id });
+                                pathDetails.push({ seedIndex: currentSeedIndex, id: sim.id });
                                 lastDrawForHighlight = { rarity: rollResult.rarity, charId: rollResult.charId };
                                 currentSeedIndex += rollResult.seedsConsumed;
                                 for(let k = 0; k < rollResult.seedsConsumed; k++) rngForText.next(); 
-                                simulationResults.push({ ...sim, result: rollResult, track: track, isGuaranteed: false, rollNum: ++totalSimRolls });
+                                simulationResults.push({ ...sim, result: rollResult, track: (pathDetails[pathDetails.length-1].seedIndex % 2 === 0 ? 'A' : 'B'), isGuaranteed: false, rollNum: ++totalSimRolls });
                             }
                         }
                     }
                 }
                 finalSeedForUpdate = rngForText.seed;
                 
-                const tableData = Array(numRolls).fill(null).map(() => ({ A: [], B: [] }));
+                // ★ 修正: tableData を seedIndex (0-based) 基準に変更
+                const tableData = Array(numRolls * 2).fill(null).map(() => []);
                 
                 gachaConfigs.forEach((config, gachaIndex) => {
                     if (!config) return;
-                    let prevDrawA = { rarity: null, charId: null };
-                    let prevDrawB = { rarity: null, charId: null };
-                    for (let i = 0; i < numRolls; i++) {
-                        const rollResultA = rollWithSeedConsumptionFixed(i * 2, config, seeds, prevDrawA);
-                        tableData[i].A[gachaIndex] = { gachaId: config.id, roll: rollResultA };
-                        prevDrawA = { rarity: rollResultA.rarity, charId: rollResultA.charId };
-                        const rollResultB = rollWithSeedConsumptionFixed(i * 2 + 1, config, seeds, prevDrawB);
-                        tableData[i].B[gachaIndex] = { gachaId: config.id, roll: rollResultB };
-                        prevDrawB = { rarity: rollResultB.rarity, charId: rollResultB.charId };
-                        if (i * 2 + 3 >= seeds.length) break; 
+                    // ★ 修正: prevDrawA, prevDrawB をガチャごとに管理
+                    let prevDrawA = null; // Aトラック (偶数 index) の直前の描画
+                    let prevDrawB = null; // Bトラック (奇数 index) の直前の描画
+                    
+                    for (let i = 0; i < numRolls; i++) { // i は行インデックス
+                        const seedIndexA = i * 2;
+                        const seedIndexB = i * 2 + 1;
+
+                        const wasPrevDrawARerolled = prevDrawA ? prevDrawA.isRerolled : false;
+                        const rollResultA = rollWithSeedConsumptionFixed(seedIndexA, config, seeds, prevDrawA);
+                        const isConsecutiveA = wasPrevDrawARerolled && rollResultA.isRerolled;
+                        tableData[seedIndexA][gachaIndex] = { gachaId: config.id, roll: rollResultA, isConsecutive: isConsecutiveA };
+                        prevDrawA = { rarity: rollResultA.rarity, charId: rollResultA.charId, isRerolled: rollResultA.isRerolled };
+                        
+                        if (seedIndexB >= seeds.length - 2) break; // Bトラックのデータがなければ終了
+
+                        const wasPrevDrawBRerolled = prevDrawB ? prevDrawB.isRerolled : false;
+                        const rollResultB = rollWithSeedConsumptionFixed(seedIndexB, config, seeds, prevDrawB);
+                        const isConsecutiveB = wasPrevDrawBRerolled && rollResultB.isRerolled;
+                        tableData[seedIndexB][gachaIndex] = { gachaId: config.id, roll: rollResultB, isConsecutive: isConsecutiveB };
+                        prevDrawB = { rarity: rollResultB.rarity, charId: rollResultB.charId, isRerolled: rollResultB.isRerolled };
+                        
+                        if (seedIndexB + 2 >= seeds.length - 2) break;
                     }
                 });
 
-                // --- Calculation Details Generation ---
-                const firstGachaConfig = gachaConfigs[0];
-                const details = {
-                    A: { rarity: [], slot: [], reroll: [], guaranteed: [], dupeInfo: [] },
-                    B: { rarity: [], slot: [], reroll: [], guaranteed: [], dupeInfo: [] }
-                };
+                // --- ★ 修正: Calculation Details Generation (全ガチャ対応) ---
+                const details = {}; 
 
-                if (showSeedColumns && firstGachaConfig) {
-                    let lastDrawA = null;
-                    let lastDrawB = null;
-                    for (let i = 0; i < numRolls; i++) {
-                        // Track A
-                        const rollA = tableData[i].A[0].roll;
-                        details.A.rarity.push(getRarityDetail('A', i, rollA, seeds));
-                        details.A.slot.push(getSlotDetail('A', i, rollA, seeds));
-                        details.A.reroll.push(getRerollDetail('A', i, rollA, firstGachaConfig, seeds));
-                        details.A.guaranteed.push(getGuaranteedDetail('A', i, firstGachaConfig, seeds, lastDrawA));
-                        const isDupeA = rollA.isRerolled;
-                        const isForceableA = canBeForced('A', i, firstGachaConfig.id, tableData, gachaConfigs);
-                        const isAvoidableA = canBeAvoided('A', i, firstGachaConfig.id, tableData, gachaConfigs);
-                        details.A.dupeInfo.push({ isDupe: isDupeA, isForceable: isForceableA, isAvoidable: isAvoidableA });
-                        lastDrawA = { rarity: rollA.rarity, charId: rollA.charId };
+                if (showSeedColumns) {
+                    gachaConfigs.forEach((gachaConfig, gachaIndex) => {
+                        if (!gachaConfig) return;
+                        const gachaId = gachaConfig.id;
+                        details[gachaId] = { rarity: [], slot: [], reroll: [], guaranteed: [], dupeInfo: [] };
+                        
+                        let lastDrawA = null;
+                        let lastDrawB = null;
 
-                        // Track B
-                        const rollB = tableData[i].B[0].roll;
-                        details.B.rarity.push(getRarityDetail('B', i, rollB, seeds));
-                        details.B.slot.push(getSlotDetail('B', i, rollB, seeds));
-                        details.B.reroll.push(getRerollDetail('B', i, rollB, firstGachaConfig, seeds));
-                        details.B.guaranteed.push(getGuaranteedDetail('B', i, firstGachaConfig, seeds, lastDrawB));
-                        const isDupeB = rollB.isRerolled;
-                        const isForceableB = canBeForced('B', i, firstGachaConfig.id, tableData, gachaConfigs);
-                        const isAvoidableB = canBeAvoided('B', i, firstGachaConfig.id, tableData, gachaConfigs);
-                        details.B.dupeInfo.push({ isDupe: isDupeB, isForceable: isForceableB, isAvoidable: isAvoidableB });
-                        lastDrawB = { rarity: rollB.rarity, charId: rollB.charId };
-                    }
+                        for (let i = 0; i < numRolls; i++) {
+                            const serialNumberA = i * 2 + 1;
+                            const seedIndexA = i * 2;
+                            const rollA = tableData[seedIndexA]?.[gachaIndex]?.roll;
+                            
+                            if (rollA && rollA.s0 !== null) {
+                                details[gachaId].rarity[seedIndexA] = getRarityDetail(serialNumberA, rollA, seeds);
+                                details[gachaId].slot[seedIndexA] = getSlotDetail(serialNumberA, rollA, seeds);
+                                details[gachaId].reroll[seedIndexA] = getRerollDetail(serialNumberA, rollA, gachaConfig, seeds);
+                                details[gachaId].guaranteed[seedIndexA] = getGuaranteedDetail(serialNumberA, gachaConfig, seeds, lastDrawA);
+                                const isDupeA = rollA.isRerolled;
+                                const isConsecutiveA = tableData[seedIndexA]?.[gachaIndex]?.isConsecutive;
+                                const isForceableA = canBeForced(seedIndexA, gachaId, tableData, gachaConfigs);
+                                const isAvoidableA = canBeAvoided(seedIndexA, gachaId, tableData, gachaConfigs);
+                                details[gachaId].dupeInfo[seedIndexA] = { isDupe: isDupeA, isConsecutive: isConsecutiveA, isForceable: isForceableA, isAvoidable: isAvoidableA };
+                                lastDrawA = { rarity: rollA.rarity, charId: rollA.charId };
+                            }
+
+                            const serialNumberB = i * 2 + 2;
+                            const seedIndexB = i * 2 + 1;
+                            const rollB = tableData[seedIndexB]?.[gachaIndex]?.roll;
+
+                            if (rollB && rollB.s0 !== null) {
+                                details[gachaId].rarity[seedIndexB] = getRarityDetail(serialNumberB, rollB, seeds);
+                                details[gachaId].slot[seedIndexB] = getSlotDetail(serialNumberB, rollB, seeds);
+                                details[gachaId].reroll[seedIndexB] = getRerollDetail(serialNumberB, rollB, gachaConfig, seeds);
+                                details[gachaId].guaranteed[seedIndexB] = getGuaranteedDetail(serialNumberB, gachaConfig, seeds, lastDrawB);
+                                const isDupeB = rollB.isRerolled;
+                                const isConsecutiveB = tableData[seedIndexB]?.[gachaIndex]?.isConsecutive;
+                                const isForceableB = canBeForced(seedIndexB, gachaId, tableData, gachaConfigs);
+                                const isAvoidableB = canBeAvoided(seedIndexB, gachaId, tableData, gachaConfigs);
+                                details[gachaId].dupeInfo[seedIndexB] = { isDupe: isDupeB, isConsecutive: isConsecutiveB, isForceable: isForceableB, isAvoidable: isAvoidableB };
+                                lastDrawB = { rarity: rollB.rarity, charId: rollB.charId };
+                            }
+                        }
+                    });
                 }
+                gachaDetailsForAllGachas = details; // ★ グローバル変数にセット
                 // --- End of Calculation Details ---
 
+                // ★ 修正: cellSimConfigs を seedIndex (0-based) 基準に変更
                 const cellSimConfigs = new Map();
                 const cellSimConfigs_Alt = new Map();
-                const speciallyContinuedLinks = new Map();
                 
-                let startSeedIndex = currentSeedIndex;
-                let startRow = Math.floor(startSeedIndex / 2);
+                let startSeedIndex = currentSeedIndex; // 0-based
+                let newRow1Index = Math.floor(startSeedIndex / 2); 
                 let startTrack = (startSeedIndex % 2 === 0) ? 'A' : 'B';
-                let newRow1Index = startRow; 
                 let baseConfig = simConfigInput;
 
                 if (simConfigInput === '') {
                     newRow1Index = 0;
                     startTrack = 'A';
                 }
-
-                const getCellDataFull = (track, row, gachaId) => {
-                    const key = `${track}-${row}-${gachaId}`;
-                    const gachaIndex = gachaConfigs.findIndex(c => c.id === gachaId);
-                    if (row < 0 || row >= numRolls || gachaIndex === -1 || !tableData[row] || !tableData[row][track][gachaIndex]) {
-                        return { config: cellSimConfigs.get(key) || null, roll: null, seedsConsumed: 0 };
-                    }
-                    const roll = tableData[row][track][gachaIndex].roll;
-                    return { config: cellSimConfigs.get(key) || null, roll: roll, seedsConsumed: roll.seedsConsumed };
-                };
                 
-                const getPrevData = (track, i, gachaId) => getCellDataFull(track, i - 1, gachaId);
-                const getPrevPrevCrossTrackData = (crossTrack, i, gachaId) => getCellDataFull(crossTrack, i - 2, gachaId);
-
+                // ★ 修正: pathDetails (ハイライト部分) の sim-config を設定
                 if (pathDetails.length > 0) {
                     const lastStep = pathDetails[pathDetails.length - 1];
                     let lastHighlightedConfig = simConfigInput;
@@ -1017,22 +1108,22 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
                             lastHighlightedConfig = stringifySimConfig(parsed);
                         }
                     }
-                    cellSimConfigs.set(`${lastStep.track}-${lastStep.row}-${lastStep.id}`, lastHighlightedConfig);
+                    cellSimConfigs.set(`${lastStep.seedIndex}-${lastStep.id}`, lastHighlightedConfig);
                     
                     for (let i = pathDetails.length - 2; i >= 0; i--) {
                         const currentStep = pathDetails[i];
                         const nextStep = pathDetails[i + 1];
-                        const nextConfigStr = cellSimConfigs.get(`${nextStep.track}-${nextStep.row}-${nextStep.id}`);
+                        const nextConfigStr = cellSimConfigs.get(`${nextStep.seedIndex}-${nextStep.id}`);
                         const currentConfigStr = decrementLastRollOrRemoveSegment(nextConfigStr);
-                        cellSimConfigs.set(`${currentStep.track}-${currentStep.row}-${currentStep.id}`, currentConfigStr);
+                        cellSimConfigs.set(`${currentStep.seedIndex}-${currentStep.id}`, currentConfigStr);
                     }
                     
                     gachaConfigs.forEach(config => {
                         pathDetails.forEach(step => {
                             if (config.id === step.id) return;
-                            const i = step.row;
-                            const cellKey = `${step.track}-${i}-${config.id}`;
-                            const primaryCellKey = `${step.track}-${i}-${step.id}`;
+                            const seedIndex = step.seedIndex;
+                            const cellKey = `${seedIndex}-${config.id}`;
+                            const primaryCellKey = `${seedIndex}-${step.id}`;
                             const primaryConfigStr = cellSimConfigs.get(primaryCellKey);
                             if (primaryConfigStr === '' || primaryConfigStr === null || typeof primaryConfigStr === 'undefined') {
                                 cellSimConfigs.set(cellKey, null);
@@ -1048,101 +1139,140 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
                         });
                     });
                     
-                    const tracksInPath = [...new Set(pathDetails.map(step => step.track))];
+                    // ★ 修正: トラックロックのロジックを seedIndex ベースに変更
+                    const tracksInPath = [...new Set(pathDetails.map(step => step.seedIndex % 2))]; // 0 (A) or 1 (B)
                     if (tracksInPath.length === 1) {
-                        const primaryTrack = tracksInPath[0];
-                        const oppositeTrack = (primaryTrack === 'A') ? 'B' : 'A';
-                        const highlightedRows = [...new Set(pathDetails.map(step => step.row))];
-                        highlightedRows.forEach(row => {
-                             gachaConfigs.forEach(config => {
-                                 cellSimConfigs.set(`${oppositeTrack}-${row}-${config.id}`, null);
-                             });
+                        const primaryTrackIndex = tracksInPath[0];
+                        const highlightedSeedIndices = new Set(pathDetails.map(step => step.seedIndex));
+                        
+                        highlightedSeedIndices.forEach(seedIndex => {
+                            const trackIndex = seedIndex % 2;
+                            if (trackIndex === primaryTrackIndex) {
+                                const oppositeSeedIndex = (primaryTrackIndex === 0) ? seedIndex + 1 : seedIndex - 1;
+                                if (oppositeSeedIndex >= 0 && oppositeSeedIndex < numRolls * 2) {
+                                     gachaConfigs.forEach(config => {
+                                         cellSimConfigs.set(`${oppositeSeedIndex}-${config.id}`, null);
+                                     });
+                                }
+                            }
                         });
                     }
                 }
 
-                for (let i = newRow1Index; i < numRolls; i++) {
+                // ★ 新しいリンク生成ロジック
+                const startSeedIndexForContinue = newRow1Index * 2 + (startTrack === 'A' ? 0 : 1);
+
+                // 1. 「続き」セクションの最初のリンクを初期設定
+                for (const config of gachaConfigs) {
+                    const id = config.id;
+                    const key = `${startSeedIndexForContinue}-${id}`;
+                    if (!cellSimConfigs.has(key)) {
+                        const configLink = `${baseConfig ? baseConfig + '-' : ''}${id}-1`;
+                        cellSimConfigs.set(key, configLink);
+                    }
+                }
+
+                const potentialLinks = new Map(); 
+
+                const setPotentialLink = (targetSeedIndex, id, link, priority) => {
+                    if (!link || targetSeedIndex >= numRolls * 2) return;
+                    const key = `${targetSeedIndex}-${id}`;
+                    const existing = potentialLinks.get(key);
+                    if (!existing || priority < existing.priority) {
+                        potentialLinks.set(key, { link, priority });
+                    }
+                };
+
+                // 2. リンクを繰り返し構築して、すべてのセルのリンクを決定する
+                for (let i = 0; i < numRolls * 2; i++) { // 十分な回数繰り返して伝播させる
+                    let changed = false;
+                    for (let seedIndex = startSeedIndexForContinue; seedIndex < numRolls * 2; seedIndex++) {
+                        gachaConfigs.forEach(config => {
+                            const id = config.id;
+                            const gachaIndex = gachaConfigs.findIndex(c => c.id === id);
+                            if (gachaIndex === -1) return;
+
+                            const configStr = cellSimConfigs.get(`${seedIndex}-${id}`);
+                            if (!configStr) return;
+
+                            const roll = tableData[seedIndex]?.[gachaIndex]?.roll;
+                            if (!roll) return;
+                            
+                            const altData = cellSimConfigs_Alt.get(`${seedIndex}-${id}`);
+                            const altConfigStr = altData ? altData.link : null;
+
+                            // 4つの優先度パスを評価
+                            if (roll.isRerolled) { // 被りあり
+                                setPotentialLink(seedIndex + 3, id, incrementLastRoll(configStr), 2); // P2
+                                if (altConfigStr) setPotentialLink(seedIndex + 2, id, incrementLastRoll(altConfigStr), 3); // P3
+                            } else { // 被りなし
+                                setPotentialLink(seedIndex + 2, id, incrementLastRoll(configStr), 1); // P1
+                                if (altConfigStr) setPotentialLink(seedIndex + 3, id, incrementLastRoll(altConfigStr), 4); // P4
+                            }
+                        });
+                    }
+
+                    potentialLinks.forEach(({ link }, key) => {
+                        if (cellSimConfigs.get(key) !== link) {
+                            cellSimConfigs.set(key, link);
+                            changed = true;
+                        }
+                    });
+
+                    if (i > 0 && !changed) break; // 変更がなくなったらループを抜ける
+                }
+                
+                // ★ 修正: リンクの伝播を確実にするための追加パス
+                for (let seedIndex = startSeedIndexForContinue; seedIndex < numRolls * 2; seedIndex++) {
+                    let baseLinkForCell = null;
+                    let baseId = null;
+                    // Find a base link in the current cell
+                    for (const config of gachaConfigs) {
+                        const link = cellSimConfigs.get(`${seedIndex}-${config.id}`);
+                        if (link) {
+                            baseLinkForCell = link;
+                            baseId = config.id;
+                            break;
+                        }
+                    }
+
+                    if (baseLinkForCell) {
+                        // Propagate this link to other gachas in the same cell
+                        const parts = parseSimConfig(baseLinkForCell);
+                        if (parts.length > 0) {
+                            const lastPart = parts[parts.length - 1];
+                            for (const otherConfig of gachaConfigs) {
+                                if (otherConfig.id === baseId) continue;
+                                const otherKey = `${seedIndex}-${otherConfig.id}`;
+                                if (!cellSimConfigs.has(otherKey)) {
+                                    lastPart.id = otherConfig.id;
+                                    cellSimConfigs.set(otherKey, stringifySimConfig(parts));
+                                }
+                            }
+                            // Restore original id to lastPart
+                            lastPart.id = baseId;
+                        }
+                    }
+                }
+
+
+                // ★ 2nd Pass: Populate cellSimConfigs_Alt for avoidable/forceable links
+                for (let seedIndex = startSeedIndexForContinue; seedIndex < numRolls * 2; seedIndex++) {
                     gachaConfigs.forEach(config => {
                         const id = config.id;
-                        let configA = null;
-                        let configB = null;
-                        if (i === newRow1Index) {
-                            if (startTrack === 'A') {
-                                configA = `${baseConfig ? baseConfig + '-' : ''}${id}-1`;
-                            } else {
-                                configB = `${baseConfig ? baseConfig + '-' : ''}${id}-1`;
-                            }
-                        } else {
-                            const gachaIndex = gachaConfigs.findIndex(c => c.id === id);
-                            const prevA = getPrevData('A', i, id);
-                            const isPrevASpecial = speciallyContinuedLinks.get(`A-${i - 1}-${id}`);
-                            if (prevA.config && (prevA.seedsConsumed <= 2 || isPrevASpecial)) {
-                                configA = incrementLastRoll(prevA.config);
-                            }
-                            const prevPrevB = getPrevPrevCrossTrackData('B', i, id);
-                            let seedsConsumedForPrevPrevB = prevPrevB.seedsConsumed;
-                            const lastPathDetail = pathDetails[pathDetails.length - 1];
-                            if (lastPathDetail && lastPathDetail.row === i - 2 && lastPathDetail.track === 'B' && lastPathDetail.id === id) {
-                                const lastSimStep = simulationResults[simulationResults.length - 1];
-                                seedsConsumedForPrevPrevB = lastSimStep.result.seedsConsumed;
-                            }
-                            if (prevPrevB.config && seedsConsumedForPrevPrevB === 3) {
-                                configA = incrementLastRoll(prevPrevB.config);
-                            }
-                            const triggerAltB = cellSimConfigs_Alt.get(`B-${i - 2}-${id}`);
-                            if (prevPrevB.config && seedsConsumedForPrevPrevB === 2 && triggerAltB && triggerAltB.link) {
-                                configA = incrementLastRoll(triggerAltB.link);
-                            }
-                            const prevB = getPrevData('B', i, id);
-                            const isPrevBSpecial = speciallyContinuedLinks.get(`B-${i - 1}-${id}`);
-                            if (prevB.config && (prevB.seedsConsumed <= 2 || isPrevBSpecial)) {
-                                configB = incrementLastRoll(prevB.config);
-                            }
-                            const prevA_for_B = getPrevData('A', i, id);
-                            let seedsConsumedForPrevA = prevA_for_B.seedsConsumed;
-                            if (lastPathDetail && lastPathDetail.row === i - 1 && lastPathDetail.track === 'A' && lastPathDetail.id === id) {
-                                 const lastSimStep = simulationResults[simulationResults.length - 1];
-                                seedsConsumedForPrevA = lastSimStep.result.seedsConsumed;
-                            }
-                            if (prevA_for_B.config && seedsConsumedForPrevA === 3) {
-                                configB = incrementLastRoll(prevA_for_B.config);
-                            }
-                            const triggerAltA = cellSimConfigs_Alt.get(`A-${i - 1}-${id}`);
-                            if (prevA_for_B.config && seedsConsumedForPrevA === 2 && triggerAltA && triggerAltA.link) {
-                                configB = incrementLastRoll(triggerAltA.link);
-                            }
-                            if (gachaIndex !== -1) {
-                                const prevRollDataA = tableData[i - 1]?.A[gachaIndex];
-                                if (prevRollDataA && prevRollDataA.roll.isRerolled) { 
-                                    const prevAltDataA = cellSimConfigs_Alt.get(`A-${i - 1}-${id}`);
-                                    const prevConfigStrA = cellSimConfigs.get(`A-${i - 1}-${id}`);
-                                    if (prevAltDataA && prevAltDataA.link && prevConfigStrA) {
-                                        configA = incrementLastRoll(prevAltDataA.link);
-                                        speciallyContinuedLinks.set(`A-${i}-${id}`, true); 
-                                    }
-                                }
-                                const prevRollDataB = tableData[i - 1]?.B[gachaIndex];
-                                if (prevRollDataB && prevRollDataB.roll.isRerolled) {
-                                    const prevAltDataB = cellSimConfigs_Alt.get(`B-${i - 1}-${id}`);
-                                    const prevConfigStrB = cellSimConfigs.get(`B-${i - 1}-${id}`);
-                                    if (prevAltDataB && prevAltDataB.link && prevConfigStrB) {
-                                        configB = incrementLastRoll(prevAltDataB.link);
-                                        speciallyContinuedLinks.set(`B-${i}-${id}`, true); 
-                                    }
-                                }
-                            }
+                        // Now that cellSimConfigs is final, we can reliably check for alternatives
+                        const altData = checkAvoidanceAndForcing(seedIndex, id, tableData, gachaConfigs, cellSimConfigs, newRow1Index);
+                        if (altData.link) { 
+                            cellSimConfigs_Alt.set(`${seedIndex}-${id}`, altData); 
                         }
-                        cellSimConfigs.set(`A-${i}-${id}`, configA);
-                        cellSimConfigs.set(`B-${i}-${id}`, configB);
-                        const altDataA = checkAvoidanceAndForcing('A', i, id, tableData, gachaConfigs, cellSimConfigs, newRow1Index);
-                        const altDataB = checkAvoidanceAndForcing('B', i, id, tableData, gachaConfigs, cellSimConfigs, newRow1Index);
-                        if (altDataA.link) { cellSimConfigs_Alt.set(`A-${i}-${id}`, altDataA); }
-                        if (altDataB.link) { cellSimConfigs_Alt.set(`B-${i}-${id}`, altDataB); }
                     });
                 }
 
+
+
                 const buttonHtml = `<button class="add-gacha-btn" onclick="addGachaColumn()">＋列を追加</button>`;
                 let totalGachaCols = 0;
+                // ★ 修正: tableGachaIds (Gあり) を使う
                 tableGachaIds.forEach(idWithG => {
                     const id = idWithG.replace('g', '');
                     if (gachaMasterData.gachas[id]) {
@@ -1169,8 +1299,9 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
                     <th class="${calcColClass}">S2<br>slot</th>
                     <th class="${calcColClass}">S3<br>ReRoll</th>
                     <th class="${calcColClass}">Guaranteed<br>slot</th>
-                    <th class="${calcColClass}">被り有無<br>誘発/回避可否</th>
+                    <th class="${calcColClass}">被り/連続被り※（遷移先）<br>誘発/回避可否（遷移先）</th>
                 `;
+                // ★ 修正: tableGachaIds (Gあり) を使う
                 tableGachaIds.forEach((idWithG, index) => {
                     const isGuaranteed = idWithG.endsWith('g');
                     const id = isGuaranteed ? idWithG.slice(0, -1) : idWithG;
@@ -1194,8 +1325,9 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
                     <th class="${calcColClass}">S2<br>slot</th>
                     <th class="${calcColClass}">S3<br>ReRoll</th>
                     <th class="${calcColClass}">Guaranteed<br>slot</th>
-                    <th class="${calcColClass}">被り有無<br>誘発/回避可否</th>
+                    <th class="${calcColClass}">被り/連続被り※（遷移先）<br>誘発/回避可否（遷移先）</th>
                 `;
+                // ★ 修正: tableGachaIds (Gあり) を使う
                 tableGachaIds.forEach((idWithG, index) => {
                     const isGuaranteed = idWithG.endsWith('g');
                     const id = isGuaranteed ? idWithG.slice(0, -1) : idWithG;
@@ -1208,18 +1340,32 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
 
                 tableHtml += `</tr></thead><tbody>`;
 
-                function generateCellContent(track, i, id) {
+                /**
+                 * ★ 修正: G列(確定枠)を *含まない* 通常セルを生成する
+                 * @param {number} seedIndex - 0-based seed index
+                 * @param {string} id - gacha ID
+                 */
+                function generateCellContent(seedIndex, id) {
+                    const i = Math.floor(seedIndex / 2); // row index
+                    const track = (seedIndex % 2 === 0) ? 'A' : 'B';
+                    
                     const gachaIndex = gachaConfigs.findIndex(c => c.id === id);
-                    if (gachaIndex === -1 || !tableData[i] || !tableData[i][track][gachaIndex] || !tableData[i][track][gachaIndex].roll) return '<td>N/A</td>';
-                    const fullRoll = tableData[i][track][gachaIndex].roll;
-                    const configStr = cellSimConfigs.get(`${track}-${i}-${id}`);
-                    const altData = cellSimConfigs_Alt.get(`${track}-${i}-${id}`) || { link: null, rerollCharName: null };
+                    if (gachaIndex === -1 || !tableData[seedIndex] || !tableData[seedIndex][gachaIndex] || !tableData[seedIndex][gachaIndex].roll) {
+                        const eventHandlers = `onmouseover="updateCalcColumns(${seedIndex}, '${id}')" onmouseout="revertCalcColumns(${seedIndex})"`;
+                        return `<td class="gacha-cell gacha-column" ${eventHandlers}>N/A</td>`;
+                    }
+                    
+                    const fullRoll = tableData[seedIndex][gachaIndex].roll;
+                    const configStr = cellSimConfigs.get(`${seedIndex}-${id}`);
+                    const altData = cellSimConfigs_Alt.get(`${seedIndex}-${id}`) || { link: null, rerollCharName: null };
                     const altConfigStr = altData.link;
-                    let highlightClass = (highlightMap.get(`${i}-${track}`) === id) ? ' highlight' : '';
+                    
+                    let highlightClass = (highlightMap.get(seedIndex) === id) ? ' highlight' : '';
                     if (highlightClass && fullRoll.rarity === 'uber') { highlightClass = ' highlight-uber'; } 
+                    
                     let cellStyle = '';
                     if (!highlightClass) {
-                        const seedVal = (track === 'A' ? seeds[i * 2] : seeds[i * 2 + 1]) % 10000;
+                        const seedVal = seeds[seedIndex] % 10000;
                         if (seedVal >= 9970) { cellStyle = 'background-color: #DDA0DD;'; } 
                         else if (seedVal >= 9940) { cellStyle = 'background-color: #9370DB;'; } 
                         else if (seedVal >= 9470) { cellStyle = 'background-color: #FF4C4C;'; } 
@@ -1227,14 +1373,18 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
                         else if (seedVal >= 6970) { cellStyle = 'background-color: #FFDAB9;'; } 
                         else if (seedVal >= 6470) { cellStyle = 'background-color: #FFFFE0;'; } 
                     }
+                    
                     let cellContent = '';
                     let nextAddress = null;
                     if (fullRoll.seedsConsumed === 3) {
-                        const destTrack = (track === 'A' ? 'B' : 'A');
-                        const destRow = (track === 'A' ? i + 1 : i + 2);
+                        // 3シード消費した場合の遷移先 (seedIndex + 3)
+                        const destSeedIndex = seedIndex + 3;
+                        const destRow = Math.floor(destSeedIndex / 2);
+                        const destTrack = (destSeedIndex % 2 === 0) ? 'A' : 'B';
                         if (destRow < numRolls) { nextAddress = `${destRow + 1}${destTrack}`; }
                     } 
                     let addressPrefix = nextAddress ? `${nextAddress}) ` : '';
+                    
                     if (fullRoll.isRerolled) {
                         const originalCharName = fullRoll.originalChar.name;
                         const rerollCharName = fullRoll.finalChar.name;
@@ -1242,62 +1392,86 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
                         let rerollDisplay = rerollCharName;
                         if (configStr) {
                             const href = `?seed=${initialSeed}&sim_config=${encodeURIComponent(configStr)}&gachas=${tableGachaIds.join('-')}`;
-                            const onclickAction = `event.preventDefault(); document.getElementById('sim-config').value = '${configStr}'; resetAndGenerateTable();`;
+                            const onclickAction = `event.preventDefault(); document.getElementById('sim-config').value = ${JSON.stringify(configStr)}; resetAndGenerateTable();`;
                             rerollDisplay = `<a href="${href}" onclick="${onclickAction}">${addressPrefix}${rerollCharName}</a>`;
                         } else {
                             rerollDisplay = `${addressPrefix}${rerollCharName}`;
                         }
                         if (altConfigStr) {
+                            // 回避リンク (2シード消費) の遷移先
+                            const avoidDestSeedIndex = seedIndex + 2;
+                            const avoidDestRow = Math.floor(avoidDestSeedIndex / 2);
+                            const avoidDestTrack = (avoidDestSeedIndex % 2 === 0) ? 'A' : 'B';
+                            const avoidAddress = (avoidDestRow < numRolls) ? `${avoidDestRow + 1}${avoidDestTrack}) ` : '';
+
                             const href = `?seed=${initialSeed}&sim_config=${encodeURIComponent(altConfigStr)}&gachas=${tableGachaIds.join('-')}`;
-                            const onclickAction = `event.preventDefault(); document.getElementById('sim-config').value = '${altConfigStr}'; resetAndGenerateTable();`;
-                            originalDisplay = `<a href="${href}" onclick="${onclickAction}">${originalCharName}</a>`;
+                            const onclickAction = `event.preventDefault(); document.getElementById('sim-config').value = ${JSON.stringify(altConfigStr)}; resetAndGenerateTable();`;
+                            originalDisplay = `<a href="${href}" onclick="${onclickAction}">${avoidAddress}${originalCharName}</a>`;
                         }
                         cellContent = `${originalDisplay}<br>${rerollDisplay}`;
                     } else {
+                        // 通常 (2シード消費)
+                        const destSeedIndex = seedIndex + 2;
+                        const destRow = Math.floor(destSeedIndex / 2);
+                        const destTrack = (destSeedIndex % 2 === 0) ? 'A' : 'B';
+                        const normalAddress = (destRow < numRolls) ? `${destRow + 1}${destTrack}) ` : '';
+
                         const originalCharName = fullRoll.finalChar.name;
                         let originalDisplay = originalCharName;
                         if (configStr) {
                             const href = `?seed=${initialSeed}&sim_config=${encodeURIComponent(configStr)}&gachas=${tableGachaIds.join('-')}`;
-                            const onclickAction = `event.preventDefault(); document.getElementById('sim-config').value = '${configStr}'; resetAndGenerateTable();`;
-                            originalDisplay = `<a href="${href}" onclick="${onclickAction}">${addressPrefix}${originalCharName}</a>`;
+                            const onclickAction = `event.preventDefault(); document.getElementById('sim-config').value = ${JSON.stringify(configStr)}; resetAndGenerateTable();`;
+                            originalDisplay = `<a href="${href}" onclick="${onclickAction}">${normalAddress}${originalCharName}</a>`;
                         } else {
-                            originalDisplay = `${addressPrefix}${originalCharName}`;
+                            originalDisplay = `${normalAddress}${originalCharName}`;
                         }
                         cellContent = originalDisplay;
+
                         if (altConfigStr) {
+                            // 誘発リンク (3シード消費) の遷移先 (addressPrefix と同じ)
                             const rerollCharName = altData.rerollCharName || "??";
-                            let inducedAddress = null;
-                            const destTrack = (track === 'A' ? 'B' : 'A');
-                            const destRow = (track === 'A' ? i + 1 : i + 2);
-                            if (destRow < numRolls) { inducedAddress = `${destRow + 1}${destTrack}`; }
-                            const inducedAddressPrefix = inducedAddress ? `${inducedAddress}) ` : '';
                             const href = `?seed=${initialSeed}&sim_config=${encodeURIComponent(altConfigStr)}&gachas=${tableGachaIds.join('-')}`;
-                            const onclickAction = `event.preventDefault(); document.getElementById('sim-config').value = '${altConfigStr}'; resetAndGenerateTable();`;
-                            const rerollDisplay = `<a href="${href}" onclick="${onclickAction}">${inducedAddressPrefix}${rerollCharName}</a>`;
+                            const onclickAction = `event.preventDefault(); document.getElementById('sim-config').value = ${JSON.stringify(altConfigStr)}; resetAndGenerateTable();`;
+                            const rerollDisplay = `<a href="${href}" onclick="${onclickAction}">${addressPrefix}${rerollCharName}</a>`;
                             cellContent = `${originalDisplay}<br>${rerollDisplay}`;
                         }
                     }
-                    return `<td class="gacha-cell gacha-column${highlightClass}" style="${cellStyle}">${cellContent}</td>`;
+                    const eventHandlers = `onmouseover="updateCalcColumns(${seedIndex}, '${id}')" onmouseout="revertCalcColumns(${seedIndex})"`;
+                    return `<td class="gacha-cell gacha-column${highlightClass}" style="${cellStyle}" ${eventHandlers}>${cellContent}</td>`;
                 }
 
+
                 for (let i = 0; i < numRolls; i++) {
-                    let rowHtml = `<tr><td class="col-no">${i + 1}</td>`;
+                    let no_A_content, no_B_content;
+                    
+                    const serialNumberA = i * 2 + 1;
+                    const serialNumberB = i * 2 + 2;
+                    const seedIndexA = i * 2;
+                    const seedIndexB = i * 2 + 1;
+                        
+                    if (showSeedColumns) {
+                        const row = i + 1;
+                        const cellAddressA = row + 'A';
+                        const cellAddressB = row + 'B';
+                        no_A_content = `(No)${serialNumberA}<br>(adrs)${cellAddressA}`;
+                        no_B_content = `(No)${serialNumberB}<br>(adrs)${cellAddressB}`;
+                    } else {
+                        no_A_content = i + 1;
+                        no_B_content = i + 1;
+                    }
+                    let rowHtml = `<tr><td class="col-no">${no_A_content}</td>`;
                     
                     // --- Track A Columns ---
                     if (showSeedColumns) {
-                        rowHtml += `<td class="${calcColClass}">${details.A.rarity[i] || ''}</td>`;
-                        rowHtml += `<td class="${calcColClass}">${details.A.slot[i] || ''}</td>`;
-                        rowHtml += `<td class="${calcColClass}">${details.A.reroll[i] || ''}</td>`;
-                        rowHtml += `<td class="${calcColClass}">${details.A.guaranteed[i] || ''}</td>`;
-                        const dupeInfoA = details.A.dupeInfo[i];
-                        if (dupeInfoA) {
-                            const dupeText = dupeInfoA.isDupe ? 'True' : 'False';
-                            const forceText = dupeInfoA.isDupe ? '---' : (dupeInfoA.isForceable ? 'True' : 'False');
-                            const avoidText = !dupeInfoA.isDupe ? '---' : (dupeInfoA.isAvoidable ? 'True' : 'False');
-                            rowHtml += `<td class="${calcColClass}">${dupeText}<br>${forceText}<br>${avoidText}</td>`;
-                        } else {
-                            rowHtml += `<td class="${calcColClass}">---</td>`;
-                        }
+                        const firstGachaId = gachaConfigs.length > 0 ? gachaConfigs[0].id : null;
+                        const defaultDetails = firstGachaId ? details[firstGachaId] : null;
+                        const dupeInfoA = defaultDetails ? defaultDetails.dupeInfo[seedIndexA] : null;
+
+                        rowHtml += `<td id="rarity-cell-A-${i}" class="${calcColClass}">${defaultDetails?.rarity[seedIndexA] || ''}</td>`;
+                        rowHtml += `<td id="slot-cell-A-${i}" class="${calcColClass}">${defaultDetails?.slot[seedIndexA] || ''}</td>`;
+                        rowHtml += `<td id="reroll-cell-A-${i}" class="${calcColClass}">${defaultDetails?.reroll[seedIndexA] || ''}</td>`;
+                        rowHtml += `<td id="guaranteed-cell-A-${i}" class="${calcColClass}">${defaultDetails?.guaranteed[seedIndexA] || ''}</td>`;
+                        rowHtml += `<td id="dupe-info-cell-A-${i}" class="${calcColClass}">${getDupeInfoHtml(dupeInfoA, seedIndexA, numRolls)}</td>`;
                     }
                     
                     tableGachaIds.forEach(idWithG => {
@@ -1305,10 +1479,13 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
                         const id = isGuaranteedColumn ? idWithG.slice(0, -1) : idWithG;
                         const gachaConfig = gachaMasterData.gachas[id];
                         if (!gachaConfig) return; 
-                        rowHtml += generateCellContent('A', i, id);
+                        rowHtml += generateCellContent(seedIndexA, id);
+                        
                         if (isGuaranteedColumn) {
-                            let lastDraw = (i > 0 && tableData[i-1] && tableData[i-1].A[gachaConfigs.findIndex(c => c.id === id)] && tableData[i-1].A[gachaConfigs.findIndex(c => c.id === id)].roll) ? { rarity: tableData[i-1].A[gachaConfigs.findIndex(c => c.id === id)].roll.rarity, charId: tableData[i-1].A[gachaConfigs.findIndex(c => c.id === id)].roll.charId } : null;
-                            const { name: guaranteedChar, nextRollStartSeedIndex } = calculateGuaranteedLookahead(i * 2, gachaConfig, seeds, lastDraw);
+                            let lastDraw = (i > 0 && tableData[seedIndexA - 2]?.[gachaConfigs.findIndex(c => c.id === id)]?.roll) 
+                                ? { rarity: tableData[seedIndexA - 2][gachaConfigs.findIndex(c => c.id === id)].roll.rarity, charId: tableData[seedIndexA - 2][gachaConfigs.findIndex(c => c.id === id)].roll.charId } 
+                                : null;
+                            const { name: guaranteedChar, nextRollStartSeedIndex } = calculateGuaranteedLookahead(seedIndexA, gachaConfig, seeds, lastDraw);
                             let guaranteedHighlight = '';
                             let content = guaranteedChar;
                             let nextAddressG = null;
@@ -1317,13 +1494,13 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
                                 const nextTrack = (nextRollStartSeedIndex % 2 === 0) ? 'A' : 'B';
                                 nextAddressG = `${nextRow + 1}${nextTrack}`;
                             }
-                            if (highlightMap.get(`${i}-AG`) === id) { guaranteedHighlight = ' class="highlight-uber"'; }
-                            const configStrA = cellSimConfigs.get(`A-${i}-${id}`);
+                            if (highlightMap.get(`${seedIndexA}G`) === id) { guaranteedHighlight = ' class="highlight-uber"'; }
+                            const configStrA = cellSimConfigs.get(`${seedIndexA}-${id}`);
                             const configG_A = generateGuaranteedConfig(configStrA, id); 
                             let addressPrefixG = nextAddressG ? `${nextAddressG}) ` : '';
                             if (configG_A) {
                                 const hrefG = `?seed=${initialSeed}&sim_config=${encodeURIComponent(configG_A)}&gachas=${tableGachaIds.join('-')}`;
-                                const onclickActionG = `event.preventDefault(); document.getElementById('sim-config').value = '${configG_A}'; resetAndGenerateTable();`;
+                                const onclickActionG = `event.preventDefault(); document.getElementById('sim-config').value = ${JSON.stringify(configG_A)}; resetAndGenerateTable();`;
                                 content = `<a href="${hrefG}" onclick="${onclickActionG}">${addressPrefixG}${guaranteedChar}</a>`;
                             } 
                             if (!content.includes('<a')) { content = `${addressPrefixG}${guaranteedChar}`}
@@ -1331,23 +1508,19 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
                         }
                     });
 
-                    rowHtml += `<td class="col-no">${i + 1}</td>`;
+                    rowHtml += `<td class="col-no">${no_B_content}</td>`;
 
                     // --- Track B Columns ---
                      if (showSeedColumns) {
-                        rowHtml += `<td class="${calcColClass}">${details.B.rarity[i] || ''}</td>`;
-                        rowHtml += `<td class="${calcColClass}">${details.B.slot[i] || ''}</td>`;
-                        rowHtml += `<td class="${calcColClass}">${details.B.reroll[i] || ''}</td>`;
-                        rowHtml += `<td class="${calcColClass}">${details.B.guaranteed[i] || ''}</td>`;
-                        const dupeInfoB = details.B.dupeInfo[i];
-                        if (dupeInfoB) {
-                            const dupeText = dupeInfoB.isDupe ? 'True' : 'False';
-                            const forceText = dupeInfoB.isDupe ? '---' : (dupeInfoB.isForceable ? 'True' : 'False');
-                            const avoidText = !dupeInfoB.isDupe ? '---' : (dupeInfoB.isAvoidable ? 'True' : 'False');
-                            rowHtml += `<td class="${calcColClass}">${dupeText}<br>${forceText}<br>${avoidText}</td>`;
-                        } else {
-                            rowHtml += `<td class="${calcColClass}">---</td>`;
-                        }
+                        const firstGachaId = gachaConfigs.length > 0 ? gachaConfigs[0].id : null;
+                        const defaultDetails = firstGachaId ? details[firstGachaId] : null;
+                        const dupeInfoB = defaultDetails ? defaultDetails.dupeInfo[seedIndexB] : null;
+
+                        rowHtml += `<td id="rarity-cell-B-${i}" class="${calcColClass}">${defaultDetails?.rarity[seedIndexB] || ''}</td>`;
+                        rowHtml += `<td id="slot-cell-B-${i}" class="${calcColClass}">${defaultDetails?.slot[seedIndexB] || ''}</td>`;
+                        rowHtml += `<td id="reroll-cell-B-${i}" class="${calcColClass}">${defaultDetails?.reroll[seedIndexB] || ''}</td>`;
+                        rowHtml += `<td id="guaranteed-cell-B-${i}" class="${calcColClass}">${defaultDetails?.guaranteed[seedIndexB] || ''}</td>`;
+                        rowHtml += `<td id="dupe-info-cell-B-${i}" class="${calcColClass}">${getDupeInfoHtml(dupeInfoB, seedIndexB, numRolls)}</td>`;
                     }
 
                     tableGachaIds.forEach(idWithG => {
@@ -1355,10 +1528,13 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
                         const id = isGuaranteedColumn ? idWithG.slice(0, -1) : idWithG;
                         const gachaConfig = gachaMasterData.gachas[id];
                         if (!gachaConfig) return;
-                        rowHtml += generateCellContent('B', i, id);
+                        rowHtml += generateCellContent(seedIndexB, id);
+                        
                         if (isGuaranteedColumn) {
-                             let lastDraw = (i > 0 && tableData[i-1] && tableData[i-1].B[gachaConfigs.findIndex(c => c.id === id)] && tableData[i-1].B[gachaConfigs.findIndex(c => c.id === id)].roll) ? { rarity: tableData[i-1].B[gachaConfigs.findIndex(c => c.id === id)].roll.rarity, charId: tableData[i-1].B[gachaConfigs.findIndex(c => c.id === id)].roll.charId } : null;
-                             const { name: guaranteedChar, nextRollStartSeedIndex } = calculateGuaranteedLookahead(i * 2 + 1, gachaConfig, seeds, lastDraw);
+                             let lastDraw = (i > 0 && tableData[seedIndexB - 2]?.[gachaConfigs.findIndex(c => c.id === id)]?.roll) 
+                                ? { rarity: tableData[seedIndexB - 2][gachaConfigs.findIndex(c => c.id === id)].roll.rarity, charId: tableData[seedIndexB - 2][gachaConfigs.findIndex(c => c.id === id)].roll.charId } 
+                                : null;
+                             const { name: guaranteedChar, nextRollStartSeedIndex } = calculateGuaranteedLookahead(seedIndexB, gachaConfig, seeds, lastDraw);
                              let guaranteedHighlight = '';
                              let content = guaranteedChar;
                              let nextAddressG = null;
@@ -1367,13 +1543,13 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
                                 const nextTrack = (nextRollStartSeedIndex % 2 === 0) ? 'A' : 'B';
                                 nextAddressG = `${nextRow + 1}${nextTrack}`;
                              }
-                             if (highlightMap.get(`${i}-BG`) === id) { guaranteedHighlight = ' class="highlight-uber"'; }
-                             const configStrB = cellSimConfigs.get(`B-${i}-${id}`);
+                             if (highlightMap.get(`${seedIndexB}G`) === id) { guaranteedHighlight = ' class="highlight-uber"'; }
+                             const configStrB = cellSimConfigs.get(`${seedIndexB}-${id}`);
                              const configG_B = generateGuaranteedConfig(configStrB, id); 
                              let addressPrefixG = nextAddressG ? `${nextAddressG}) ` : '';
                              if (configG_B) {
                                 const hrefG = `?seed=${initialSeed}&sim_config=${encodeURIComponent(configG_B)}&gachas=${tableGachaIds.join('-')}`;
-                                const onclickActionG = `event.preventDefault(); document.getElementById('sim-config').value = '${configG_B}'; resetAndGenerateTable();`;
+                                const onclickActionG = `event.preventDefault(); document.getElementById('sim-config').value = ${JSON.stringify(configG_B)}; resetAndGenerateTable();`;
                                 content = `<a href="${hrefG}" onclick="${onclickActionG}">${addressPrefixG}${guaranteedChar}</a>`;
                              }
                              if (!content.includes('<a')) { content = `${addressPrefixG}${guaranteedChar}`}
@@ -1388,7 +1564,74 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
                 tableHtml += '</tbody></table>';
                 document.getElementById('rolls-table-container').innerHTML = tableHtml;
 
-                let simulationOutputString = '--- シミュレーション詳細 ---\n';
+                // --- ★ 修正: シリアルテーブルの生成ロジック ---
+                const serialTableContainer = document.getElementById('serial-table-container');
+                if (showSeedColumns) {
+                    let serialTableHtml = `<h2 style="text-align: center; font-size: 1em; margin-top: 20px;">シリアルテーブル (SEED順) <button class="add-gacha-btn" onclick="addGachaColumn()">＋列を追加</button></h2>`;
+                    serialTableHtml += `<table><thead><tr>`;
+                    serialTableHtml += `<th class="col-no">NO.</th>`;
+                    serialTableHtml += `<th class="${calcColClass}">S1<br>rarity</th>`;
+                    serialTableHtml += `<th class="${calcColClass}">S2<br>slot</th>`;
+                    serialTableHtml += `<th class="${calcColClass}">S3<br>ReRoll</th>`;
+                    serialTableHtml += `<th class="${calcColClass}">Guaranteed<br>slot</th>`;
+                    serialTableHtml += `<th class="${calcColClass}">被り/連続被り※（遷移先）<br>誘発/回避可否（遷移先）</th>`;
+                    
+                    tableGachaIds.forEach((idWithG, index) => {
+                        const isGuaranteed = idWithG.endsWith('g');
+                        if (isGuaranteed) return; // シリアルテーブルにG列は表示しない
+
+                        const id = idWithG;
+                        const gachaConfig = gachaMasterData.gachas[id];
+                        if (!gachaConfig) return;
+
+                        const removeButtonHtml = `<button onclick="removeGachaColumn(${index})">x</button>`;
+                        const gButtonHtml = `<button onclick="toggleGuaranteedColumn(${index})">G</button>`;
+                        let selectorHtml = `<select onchange="updateGachaSelection(this, ${index})">`;
+                        Object.values(gachaMasterData.gachas).filter(g => g.sort < 800).sort((a, b) => a.sort - b.sort).forEach(gacha => {
+                            selectorHtml += `<option value="${gacha.id}" ${gacha.id === id ? 'selected' : ''}>${gacha.name}</option>`;
+                        });
+                        selectorHtml += '</select>';
+                        const headerName = `${gachaConfig.name} (ID: ${gachaConfig.id})`;
+                        serialTableHtml += `<th class="gacha-column"><div class="gacha-select-header">${selectorHtml}<span>${headerName}</span><br/>${gButtonHtml}${removeButtonHtml}</div></th>`;
+                    });
+
+                    serialTableHtml += '</tr></thead><tbody>';
+
+                    // データ行
+                    for (let seedIndex = 0; seedIndex < numRolls * 2; seedIndex++) {
+                        const firstGachaId = gachaConfigs.length > 0 ? gachaConfigs[0].id : null;
+                        if (!firstGachaId || !details[firstGachaId]?.rarity[seedIndex]) break; 
+
+                        const serialNumber = seedIndex + 1;
+                        const row = Math.floor(seedIndex / 2) + 1;
+                        const adrs = `${row}${(seedIndex % 2 === 0 ? 'A' : 'B')}`;
+                        
+                        const no_content = `(No)${serialNumber}<br>(adrs)${adrs}`;
+                        serialTableHtml += `<tr><td class="col-no">${no_content}</td>`;
+                        
+                        const dupeInfo = firstGachaId ? details[firstGachaId]?.dupeInfo[seedIndex] : null;
+                        serialTableHtml += `<td id="rarity-cell-S-${seedIndex}" class="${calcColClass}">${firstGachaId ? details[firstGachaId]?.rarity[seedIndex] || '' : ''}</td>`;
+                        serialTableHtml += `<td id="slot-cell-S-${seedIndex}" class="${calcColClass}">${firstGachaId ? details[firstGachaId]?.slot[seedIndex] || '' : ''}</td>`;
+                        serialTableHtml += `<td id="reroll-cell-S-${seedIndex}" class="${calcColClass}">${firstGachaId ? details[firstGachaId]?.reroll[seedIndex] || '' : ''}</td>`;
+                        serialTableHtml += `<td id="guaranteed-cell-S-${seedIndex}" class="${calcColClass}">${firstGachaId ? details[firstGachaId]?.guaranteed[seedIndex] || '' : ''}</td>`;
+                        serialTableHtml += `<td id="dupe-info-cell-S-${seedIndex}" class="${calcColClass}">${getDupeInfoHtml(dupeInfo, seedIndex, numRolls)}</td>`;
+                        
+                        tableGachaIds.forEach(idWithG => {
+                            if (idWithG.endsWith('g')) return;
+                            serialTableHtml += generateCellContent(seedIndex, idWithG);
+                        });
+                        serialTableHtml += '</tr>';
+                    }
+
+                    serialTableHtml += '</tbody></table>';
+                    serialTableContainer.innerHTML = serialTableHtml;
+                } else {
+                    serialTableContainer.innerHTML = ''; // 非表示の場合はクリア
+                }
+                // --- ★ 追加ここまで ---
+
+
+                let simulationOutputString = '--- シミュレーション詳細 ---';
                 if (simulationResults.length > 0) {
                     simulationResults.forEach((sim, index) => {
                         if (!sim || !sim.result) return;
@@ -1418,6 +1661,39 @@ SEED更新ボタンを押すとシミュレーションにより薄緑色等で�
         }
 
         window.onload = loadAndProcessData;
+
+        function updateCalcColumns(seedIndex, gachaId) {
+            if (!showSeedColumns || !gachaDetailsForAllGachas[gachaId]) return;
+
+            const track = (seedIndex % 2 === 0) ? 'A' : 'B';
+            const rowIndex = Math.floor(seedIndex / 2);
+            const gachaDetails = gachaDetailsForAllGachas[gachaId];
+            const numRolls = currentRolls;
+
+            const rarityCell = document.getElementById(`rarity-cell-${track}-${rowIndex}`) || document.getElementById(`rarity-cell-S-${seedIndex}`);
+            if (rarityCell) rarityCell.innerHTML = gachaDetails.rarity[seedIndex] || '';
+            
+            const slotCell = document.getElementById(`slot-cell-${track}-${rowIndex}`) || document.getElementById(`slot-cell-S-${seedIndex}`);
+            if (slotCell) slotCell.innerHTML = gachaDetails.slot[seedIndex] || '';
+
+            const rerollCell = document.getElementById(`reroll-cell-${track}-${rowIndex}`) || document.getElementById(`reroll-cell-S-${seedIndex}`);
+            if (rerollCell) rerollCell.innerHTML = gachaDetails.reroll[seedIndex] || '';
+
+            const guaranteedCell = document.getElementById(`guaranteed-cell-${track}-${rowIndex}`) || document.getElementById(`guaranteed-cell-S-${seedIndex}`);
+            if (guaranteedCell) guaranteedCell.innerHTML = gachaDetails.guaranteed[seedIndex] || '';
+
+            const dupeInfoCell = document.getElementById(`dupe-info-cell-${track}-${rowIndex}`) || document.getElementById(`dupe-info-cell-S-${seedIndex}`);
+            if (dupeInfoCell) {
+                const dupeInfo = gachaDetails.dupeInfo[seedIndex];
+                dupeInfoCell.innerHTML = getDupeInfoHtml(dupeInfo, seedIndex, numRolls);
+            }
+        }
+
+        function revertCalcColumns(seedIndex) {
+            if (!showSeedColumns || gachaConfigsForRevert.length === 0) return;
+            const firstGachaId = gachaConfigsForRevert[0].id;
+            updateCalcColumns(seedIndex, firstGachaId);
+        }
     </script>
 </body>
 </html>
